@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  render-and-test:
+    runs-on: ubuntu-latest
+    env:
+      RENV_CONFIG_PAK_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "4.5.3"
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-renv@v2
+
+      - uses: quarto-dev/quarto-actions/setup@v2
+
+      - name: Export data
+        run: Rscript data/get_data.R
+
+      - name: Run tests
+        run: Rscript tests/testthat.R
+
+      - name: Render notebook end to end
+        run: quarto render notebooks/01_fairness_audit.qmd
+
+      - name: Upload rendered report
+        uses: actions/upload-artifact@v4
+        with:
+          name: fairness-audit-report
+          path: |
+            notebooks/01_fairness_audit.html
+            reports/figures/*.png
