@@ -1,0 +1,35 @@
+# ---- Never versioned ----
+# Original coursework notebook: contains a local absolute path, kept for reference only
+legacy/
+data/raw/
+data/interim/
+.env
+.env.*
+
+# ---- R / renv / Quarto ----
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+renv/library/
+renv/local/
+renv/staging/
+renv/python/
+.quarto/
+_freeze/
+notebooks/*_files/
+notebooks/*.html
+!docs/*.html
+
+# ---- Python (shared template) ----
+__pycache__/
+.ipynb_checkpoints/
+.venv/
+
+# ---- OS / editors ----
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
