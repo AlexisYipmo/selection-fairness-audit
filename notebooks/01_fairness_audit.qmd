@@ -1,0 +1,290 @@
+---
+title: "Is our selection process biased? A fairness audit"
+subtitle: "UC Berkeley graduate admissions, fall 1973 (4,526 applications)"
+author: "Alexis Yipmo"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    code-fold: true
+    code-summary: "Show code"
+    embed-resources: true
+    theme: cosmo
+    fig-width: 8
+    fig-height: 4.5
+execute:
+  echo: true
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    fig.align: center
+    dev: png
+    dpi: 150
+---
+
+```{r setup}
+#| code-summary: "Setup: paths, seed, functions, plot theme"
+set.seed(42)  # no random step in this audit; fixed for reproducibility of any extension
+
+find_root <- function(dir = getwd()) {
+  while (!file.exists(file.path(dir, "src", "fairness.R"))) {
+    parent <- dirname(dir)
+    if (identical(parent, dir)) stop("Project root not found")
+    dir <- parent
+  }
+  dir
+}
+ROOT <- find_root()
+source(file.path(ROOT, "src", "fairness.R"))
+FIGURES <- file.path(ROOT, "reports", "figures")
+dir.create(FIGURES, recursive = TRUE, showWarnings = FALSE)
+
+library(ggplot2)
+
+# Categorical pair validated for colour-vision deficiency (blue / orange)
+COL_GENDER <- c(Male = "#2a78d6", Female = "#eb6834")
+LAB_GENDER <- c(Male = "Men", Female = "Women")
+INK <- "#0b0b0b"; INK_2 <- "#52514e"
+
+theme_audit <- function() {
+  theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(face = "bold", colour = INK, size = 13),
+      plot.subtitle = element_text(colour = INK_2),
+      plot.caption = element_text(colour = INK_2, hjust = 0),
+      axis.text = element_text(colour = INK_2),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.y = element_blank(),
+      legend.position = "top",
+      legend.justification = "left",
+      plot.title.position = "plot",
+      plot.background = element_rect(fill = "white", colour = NA)
+    )
+}
+
+save_fig <- function(plot, name, width = 8, height = 4.5) {
+  ggsave(file.path(FIGURES, paste0(name, ".png")), plot,
+         width = width, height = height, dpi = 150, bg = "white")
+  plot
+}
+
+pct <- function(x, digits = 1) sprintf(paste0("%.", digits, "f%%"), 100 * x)
+
+d <- load_admissions()
+```
+
+## The question
+
+A selection committee receives `r format(sum(d$n), big.mark = ",")` applications. Women are admitted far less often than men. **Is the selection process biased against women, or is something else going on?**
+
+The data is the public `datasets::UCBAdmissions` table: admissions to the six largest graduate departments of UC Berkeley in fall 1973 (Bickel et al., *Science*, 1975). The total matches the 4,526 applications of the original coursework file. See [data/README.md](../data/README.md) for a coding discrepancy found in that file.
+
+## 1. Overall gap: men are admitted far more often
+
+```{r overall}
+gap <- gender_gap_test(d)
+overall <- admission_rates(d, "gender")
+knitr::kable(
+  transform(overall, gender = LAB_GENDER[as.character(gender)], rate = pct(rate)),
+  col.names = c("Gender", "Applicants", "Admitted", "Admission rate"),
+  format.args = list(big.mark = ",")
+)
+```
+
+Men are admitted at `r pct(gap$rate_male)` against `r pct(gap$rate_female)` for women, a gap of **`r sprintf("%.1f", 100 * gap$gap)` points** (95 % CI `r sprintf("%.1f", 100 * gap$conf_int[1])` to `r sprintf("%.1f", 100 * gap$conf_int[2])` points; chi-square = `r sprintf("%.1f", gap$statistic)`, 1 df, p < 0.001). Taken alone, this number looks like strong evidence of discrimination.
+
+```{r fig-overall}
+#| fig-height: 3.2
+overall$label <- LAB_GENDER[as.character(overall$gender)]
+p1 <- ggplot(overall, aes(x = rate, y = reorder(label, rate), fill = gender)) +
+  geom_col(width = 0.55) +
+  geom_text(aes(label = pct(rate)), hjust = -0.15, colour = INK, size = 4) +
+  scale_fill_manual(values = COL_GENDER, guide = "none") +
+  scale_x_continuous(labels = scales::percent, limits = c(0, 0.55), expand = c(0, 0)) +
+  labs(
+    title = sprintf("Overall, men are admitted %.0f points more often than women",
+                    100 * gap$gap),
+    subtitle = "Admission rate, all six departments pooled",
+    x = NULL, y = NULL,
+    caption = sprintf("95 %% CI of the gap: %.1f to %.1f points. Source: UC Berkeley, fall 1973 (n = 4,526).",
+                      100 * gap$conf_int[1], 100 * gap$conf_int[2])
+  ) +
+  theme_audit()
+save_fig(p1, "01_overall_gap", height = 3.2)
+```
+
+## 2. Department by department, the gap reverses
+
+```{r by-dept}
+by_dept <- admission_rates(d, c("dept", "gender"))
+wide <- reshape(by_dept[, c("dept", "gender", "applicants", "rate")],
+                idvar = "dept", timevar = "gender", direction = "wide")
+women_ahead <- sum(wide$rate.Female > wide$rate.Male)
+knitr::kable(
+  data.frame(Department = wide$dept,
+             `Men applicants` = wide$applicants.Male, `Men rate` = pct(wide$rate.Male),
+             `Women applicants` = wide$applicants.Female, `Women rate` = pct(wide$rate.Female),
+             check.names = FALSE),
+  format.args = list(big.mark = ",")
+)
+```
+
+Women have the higher admission rate in **`r women_ahead` of 6 departments**. The pooled gap and the within-department picture point in opposite directions: this is **Simpson's paradox**.
+
+```{r fig-simpson}
+#| fig-height: 4.6
+seg <- data.frame(dept = wide$dept, from = wide$rate.Male, to = wide$rate.Female)
+pooled <- data.frame(dept = "All", from = gap$rate_male, to = gap$rate_female)
+seg <- rbind(pooled, seg)
+seg$dept <- factor(seg$dept, levels = rev(c("All", LETTERS[1:6])))
+pts <- rbind(
+  data.frame(dept = seg$dept, gender = "Male", rate = seg$from),
+  data.frame(dept = seg$dept, gender = "Female", rate = seg$to)
+)
+p2 <- ggplot() +
+  geom_hline(yintercept = 6.5, colour = "#d9d8d4") +
+  geom_segment(data = seg, aes(x = from, xend = to, y = dept, yend = dept),
+               colour = "#c3c2b7", linewidth = 1) +
+  geom_point(data = pts, aes(x = rate, y = dept, colour = gender), size = 3.2) +
+  scale_colour_manual(values = COL_GENDER, labels = LAB_GENDER, breaks = c("Male", "Female"), name = NULL) +
+  scale_x_continuous(labels = scales::percent, limits = c(0, 0.9)) +
+  labs(
+    title = sprintf("Within departments the gap vanishes: women do as well or better in %d of 6",
+                    women_ahead),
+    subtitle = "Admission rate by gender, pooled (top) and per department (A to F)",
+    x = "Admission rate", y = NULL,
+    caption = "Simpson's paradox: the pooled comparison hides where each group applied."
+  ) +
+  theme_audit() +
+  theme(panel.grid.major.y = element_line(colour = "#f0efec"))
+save_fig(p2, "02_simpson_by_department", height = 4.6)
+```
+
+## 3. Admission depends on the department, and strongly
+
+*Does the chance of admission differ between departments (1 % level), ignoring gender?*
+
+```{r chisq}
+cs <- admit_dept_chisq(d)
+```
+
+- **Test**: Pearson chi-square of independence, Admit x Dept: X² = `r sprintf("%.1f", cs$statistic)`, `r cs$df` df, p < 0.001. Independence is rejected at the 1 % level.
+- **Conditions**: the rule applies to **expected** counts under H0, not observed ones. The smallest expected count is `r sprintf("%.1f", cs$min_expected)` and `r pct(cs$share_expected_ge5, 0)` of cells have an expected count of at least 5, so the chi-square approximation is valid. Observations are independent applications (one row per application).
+- **Effect size**: Cramér's V = `r sprintf("%.2f", cs$cramers_v)`, a strong association, not just a "significant" one.
+
+**Which cells drive the dependence?** The coursework used `cor()` on the contingency table, which is meaningless here (two rows always give correlations of +1 or -1). The right tool is the **standardized residual** of each cell, (observed - expected) / its standard error: values beyond ±2 point to cells that depart clearly from independence, and the sign gives the direction.
+
+```{r fig-residuals}
+#| fig-height: 3.4
+res <- cs$residuals
+res$admit <- factor(res$admit, levels = c("Rejected", "Admitted"))
+lim <- ceiling(max(abs(res$std_residual)))
+p3 <- ggplot(res, aes(x = dept, y = admit, fill = std_residual)) +
+  geom_tile(colour = "white", linewidth = 2) +
+  geom_text(aes(label = sprintf("%+.1f", std_residual),
+                colour = abs(std_residual) > 10), size = 4.2, show.legend = FALSE) +
+  scale_colour_manual(values = c(`TRUE` = "white", `FALSE` = INK)) +
+  scale_fill_gradient2(low = "#e34948", mid = "#f0efec", high = "#2a78d6",
+                       midpoint = 0, limits = c(-lim, lim),
+                       name = "Standardized residual") +
+  labs(
+    title = "A and B admit far more than expected, E and F far fewer: departments differ in selectivity",
+    subtitle = "Standardized residuals of the Admit x Dept chi-square (beyond ±2 = clear departure from independence)",
+    x = "Department", y = NULL,
+    caption = sprintf("X² = %.1f, %d df, p < 0.001, Cramér's V = %.2f. Smallest expected count = %.0f.",
+                      cs$statistic, cs$df, cs$cramers_v, cs$min_expected)
+  ) +
+  theme_audit() +
+  theme(panel.grid = element_blank(), legend.key.width = unit(1.6, "cm"))
+save_fig(p3, "03_residuals_admit_dept", height = 3.4)
+```
+
+```{r residual-table}
+adm <- res[res$admit == "Admitted", ]
+adm$direction <- ifelse(adm$std_residual > 2, "More admissions than expected",
+                 ifelse(adm$std_residual < -2, "More rejections than expected", "Close to independence"))
+knitr::kable(adm[, c("dept", "observed", "expected", "std_residual", "direction")],
+             digits = 1, row.names = FALSE,
+             col.names = c("Department", "Admitted (observed)", "Admitted (expected)",
+                           "Std. residual", "Contribution"))
+```
+
+All six departments contribute: **A and B** pull towards admission, **C, D, E and F** towards rejection, with **F** (residual `r sprintf("%.1f", adm$std_residual[adm$dept == "F"])`) and **A** (`r sprintf("%+.1f", adm$std_residual[adm$dept == "A"])`) the largest contributors.
+
+## 4. Where people applied explains the pooled gap
+
+```{r mix}
+mix <- application_mix(d)
+dept_rates <- admission_rates(d, "dept")
+selective <- as.character(dept_rates$dept[dept_rates$rate < 0.5])
+share_sel <- tapply(mix$share_of_gender[mix$dept %in% selective],
+                    mix$gender[mix$dept %in% selective], sum)
+```
+
+Departments `r paste(selective, collapse = ", ")` admit fewer than half of their applicants. They received **`r pct(share_sel[["Female"]], 0)` of women's applications** but only **`r pct(share_sel[["Male"]], 0)` of men's**.
+
+```{r fig-mix}
+#| fig-height: 4.4
+mix$dept_lab <- factor(sprintf("%s\n(%s admitted)", mix$dept, pct(mix$dept_rate, 0)),
+                       levels = unique(sprintf("%s\n(%s admitted)", dept_rates$dept[order(-dept_rates$rate)],
+                                               pct(dept_rates$rate[order(-dept_rates$rate)], 0))))
+p4 <- ggplot(mix, aes(x = dept_lab, y = share_of_gender, fill = gender)) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.7) +
+  geom_text(aes(label = pct(share_of_gender, 0)), position = position_dodge(width = 0.75),
+            vjust = -0.4, size = 3.3, colour = INK) +
+  scale_fill_manual(values = COL_GENDER, labels = LAB_GENDER, name = NULL) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 0.36), expand = c(0, 0)) +
+  labs(
+    title = sprintf("%s of women applied to the four most selective departments (C to F), vs %s of men",
+                    pct(share_sel[["Female"]], 0), pct(share_sel[["Male"]], 0)),
+    subtitle = "Share of each gender's applications by department, from least to most selective",
+    x = NULL, y = "Share of applications",
+    caption = "Departments ordered by overall admission rate."
+  ) +
+  theme_audit() +
+  theme(panel.grid.major.x = element_blank(), panel.grid.major.y = element_line(colour = "#f0efec"))
+save_fig(p4, "04_application_mix", height = 4.4)
+```
+
+## 5. Controlling for department: no evidence of bias against women
+
+```{r cmh-logit}
+cmh <- cmh_gender(d)
+lg <- logit_gender_dept(d)
+or <- lg$odds_ratios
+or_f <- or[or$term == "genderFemale", ]
+or$term <- c("Intercept (odds, men in A)", "Women vs men", paste("Dept", LETTERS[2:6], "vs A"))
+knitr::kable(or, digits = c(0, 2, 2, 2, 4), row.names = FALSE,
+             col.names = c("Term", "Odds ratio", "95 % CI low", "95 % CI high", "p-value"))
+```
+
+- **Cochran-Mantel-Haenszel** (Admit x Gender, stratified by department): common odds ratio women vs men = **`r sprintf("%.2f", cmh$odds_ratio)`** (95 % CI `r sprintf("%.2f", cmh$conf_int[1])` to `r sprintf("%.2f", cmh$conf_int[2])`), p = `r sprintf("%.2f", cmh$p_value)`.
+- **Logistic regression** Admit ~ Gender + Dept: odds ratio women vs men = **`r sprintf("%.2f", or_f$odds_ratio)`** (95 % CI `r sprintf("%.2f", or_f$conf_low)` to `r sprintf("%.2f", or_f$conf_high)`), p = `r sprintf("%.2f", or_f$p_value)`. The department odds ratios range from `r sprintf("%.2f", min(or$odds_ratio[3:7]))` to `r sprintf("%.2f", max(or$odds_ratio[3:7]))`: the department applied to matters far more than gender.
+- **Is the gender effect the same everywhere?** Adding a Gender x Dept interaction improves the fit (likelihood-ratio test p = `r sprintf("%.3f", lg$interaction_p)`). The heterogeneity comes mainly from department A, where women are admitted at a much higher rate than men. The common odds ratio is therefore an average, not a constant.
+
+Once department is accounted for, the odds of admission for women are **not lower** than for men: the point estimate is slightly in their favour and the confidence interval includes 1.
+
+## 6. What a decision-maker should take away
+
+**Where the real issue is.** The 14-point pooled gap is not produced by committees treating women worse than men in the same department. It comes from two facts combined: departments differ hugely in selectivity (from about 6 % to 64 % admitted), and women applied mostly to the most selective ones. Auditing only the headline rate would have led to the wrong diagnosis and the wrong remedy.
+
+**Questions to ask next.**
+
+1. Why do the most demanded departments admit so few? Is it capacity (places, funding per student) or stricter criteria?
+2. Why did women apply mostly to those departments? Field preferences, prior training, outreach, or perceived chances elsewhere?
+3. Is funding allocated in proportion to demand? A department with many applicants and few places is a resource question, not only a selection question.
+4. In department A, women are admitted much more often than men: is that explained by application quality, or does it need its own review?
+
+**Limits.**
+
+- **Observational, aggregated data**: no information on applicant qualifications (grades, test scores, references). The analysis rules out a department-level gender gap; it cannot rule out bias in how applicants were steered towards departments, or bias offset by stronger female applications.
+- **Six departments only** (the largest ones), one year (1973), binary gender as recorded at the time.
+- **Department labels are anonymised**, so the selectivity finding cannot be linked to specific fields.
+- The common odds ratio hides heterogeneity between departments (interaction test above).
+
+```{r session}
+#| code-summary: "Session info"
+sessionInfo()
+```
