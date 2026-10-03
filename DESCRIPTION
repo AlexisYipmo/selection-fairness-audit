@@ -1,0 +1,15 @@
+Type: project
+Package: selectionfairnessaudit
+Title: Is our selection process biased? A fairness audit
+Version: 1.0.0
+Authors@R: person("Alexis", "Yipmo", role = c("aut", "cre"))
+Description: Fairness audit of the UC Berkeley 1973 graduate admissions
+    (Simpson's paradox, chi-square residuals, CMH, logistic regression).
+License: MIT
+Depends: R (>= 4.3)
+Imports:
+    ggplot2,
+    scales,
+    knitr,
+    rmarkdown,
+    testthat
